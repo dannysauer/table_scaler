@@ -1,0 +1,234 @@
+<html>
+<!--
+   Copyright 2023 Danny Sauer <danny@dannysauer.com>
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-->
+<head><script>
+var tbl;
+var rpm, maps;
+var newrpm, newmaps;
+var width, height;
+function parse(elem){
+    rpm     = elem.rpm.value.split("\t").map( x => parseInt(x) );
+    maps    = elem.map.value.split("\n").reverse().map( x => parseInt(x) );
+    width   = rpm.length;
+    height  = maps.length;
+    newrpm  = elem.newrpm.value.split("\t").map( x => parseInt(x) );
+    newmaps = elem.newmap.value.split("\n").reverse().map( x => parseInt(x) );
+    var tbl_rows = elem.tbl.value.split("\n").reverse();
+    // TODO: check newrpm, newmap, tbl_rows for same size
+    tbl = new Array(tbl_rows.length);
+    for( let r = 0; r<tbl_rows.length; r++ ){
+        tbl[r] = tbl_rows[r].split("\t").map( x => parseFloat(x) );
+        // TODO: check row for right length
+    }
+    // at this point the table is "rotated"; first is y/map, second is x/rpm
+    // rotate it so the indices make sense in x/y coordinates
+    var rot = Array(width);
+    for( let x=0; x<width; x++ ){
+        rot[x] = Array(height);
+        for( let y=0; y<height; y++ ){
+            rot[x][y] = tbl[y][x];
+        }
+    }
+    tbl = rot;
+    var w = document.getElementById("width");
+    var h = document.getElementById("height");
+    w.innerHTML = '';
+    w.appendChild( document.createTextNode('' + width)  );
+    h.innerHTML = '';
+    h.appendChild( document.createTextNode('' + height) );
+    
+    var err = document.getElementById("error");
+    err.innerHTML = ''
+
+    // populate the new table
+    var newtbl = new Array(width);
+    for( let r = 0; r < width; r++ ){
+        newtbl[r] = new Array(height);
+        for( let c = 0; c < height; c++ ){
+            newtbl[r][c] = interpolate(newrpm[r], newmaps[c]);
+            err.appendChild( document.createTextNode(
+                'old: ' + tbl[r][c]    + '@' + r + ':' + c
+                + ', ' +
+                'new: ' + newtbl[r][c] + '@' + r + ':' + c
+            ) );
+            err.appendChild( document.createElement('br') );
+        }
+    }
+
+    // copy-paste source
+    var newt = document.getElementById("new_table");
+    newt.value = render_text_table(newtbl);
+
+    // screen display table
+    var newd = document.getElementById("new_display");
+    newd.innerHTML = "";
+    newd.appendChild( render_html_table(newtbl) );
+}
+
+function interpolate(r, m){
+    // find nearest rpm after new value
+    var rpm_upper  = -1;
+    var rpm_lower  = -1;
+    var rpm_offset = 0;
+    var rpm_pct    = 1.0;
+    for(let i=0; i<rpm.length; i++){
+        //console.log("r-comparing " + rpm[i] + " to " + r + " at index " + i);
+        if( rpm[i] >= r ){
+            rpm_offset = rpm[i] - r;
+            rpm_upper = i;
+            rpm_lower = rpm_offset==0 ? i : ( i>0 ? i-1 : 0 );
+            rpm_pct   = rpm_offset==0 ? 0 : rpm_offset / (rpm[rpm_upper] - rpm[rpm_lower])
+            break;
+        }
+    }
+    // TODO: check for -1 == exceeded upper bound
+    //console.log('rpm_upper: ' + rpm_upper + ', ' + 'rpm_lower: ' + rpm_lower);
+    //console.log('rpm_offset: ' + rpm_offset + ', ' + 'rpm_pct: ' + rpm_pct);
+
+    // find nearest map after new value
+    var map_upper  = -1;
+    var map_lower  = -1;
+    var map_offset = 0;
+    var map_pct    = 1.0;
+    for(let i=0; i<maps.length; i++){
+        //console.log("m-comparing " + maps[i] + " to " + m + " at index " + i);
+        if( maps[i] >= m ){
+            map_offset = maps[i] - m;
+            map_upper = i;
+            map_lower = map_offset==0 ? i : ( i>0 ? i-1 : 0 );
+            map_pct   = map_offset==0 ? 0 : map_offset / (maps[map_upper] - maps[map_lower])
+            break;
+        }
+    }
+    // TODO: check for -1 == exceeded upper bound
+
+    //console.log('map_upper: ' + map_upper + ', ' + 'map_lower: ' + map_lower);
+    //console.log('map_offset: ' + map_offset + ', ' + 'map_pct: ' + map_pct);
+
+    // extract fuel matrix
+    var box = [
+        [ 
+            tbl[rpm_lower][map_lower],
+            tbl[rpm_lower][map_upper]
+        ],
+        [ 
+            tbl[rpm_upper][map_lower],
+            tbl[rpm_upper][map_upper]
+        ]
+    ];
+    //console.log( box.map( x => x.join(",") ).join(';') );
+
+    // lower MAP line
+    var m0 = box[1][0] - ((box[1][0] - box[0][0]) * rpm_pct);
+    // upper MAP line
+    var m1 = box[1][1] - ((box[1][1] - box[0][1]) * rpm_pct);
+    // interpreted MAP values on a newly-fixed RPM
+    var r0 = m1 - ((m1 - m0) * map_pct);
+    //console.log('m0: ' + m0 + ", m1: " + m1 + ", r0: " + r0 );
+    return r0
+}
+
+// render the new table in copy/paste-friendly format
+function render_text_table(t){
+    // one row for each MAP value, so "length of RPM arrays"
+    var rs = new Array(t[0].length);
+    // foreach MAP value, iterate over RPM vals
+    for( let m=0; m<t[0].length; m++ ){
+        var row = Array(t.length)
+        for( let r=0; r < t.length; r++ ){
+            row[r] = t[r][m];
+        }
+        // new row = one MAP's set of RPM values joined by tab
+        rs[m] = row.join("\t");
+    }
+    // finally print out "backwards" like in EFI tool
+    return rs.reverse().join("\n");
+}
+
+// render the new table in human-readable format
+function render_html_table(t){
+    var table = document.createElement("table");
+    var row, cell;
+
+    // new values, following new map column
+    for( let m=newmaps.length-1; m>=0; m--){
+        row = table.insertRow(-1);
+        cell = row.insertCell(0);
+        cell.innerHTML = newmaps[m];
+        // TODO: set style on cell (bold?)
+        for( let r=0; r<newrpm.length; r++){
+            cell = row.insertCell(r+1);
+            cell.innerHTML = t[r][m];
+        }
+    }
+
+    // new rpm values at the bottom
+    row = table.insertRow(-1);
+    cell = row.insertCell(0);
+    cell.innerHTML = ""
+    for( let r=0; r<newrpm.length; r++ ){
+        cell = row.insertCell(r+1);
+        cell.innerHTML = newrpm[r];
+        // TODO: set style on cell (bold?)
+    }
+
+    return table;
+}
+
+</script></head>
+<body>
+    <p>Welcome to the zero warranty way to linearly scale your table.</p>
+    <p>The really clunky process is:</p>
+    <ol>
+        <li>click in your horizontal axis</li>
+        <li>ctrl+a, then ctrl+v</li>
+        <li>paste into RPM field here</li>
+        <li>repeat for horizontal axis, pasting into MAP field here</li>
+        <li>click on a cell in the table and repeat, pasting into tbl field</li>
+        <li>Edit your table's horizontal axis to be what you want</li>
+        <li>ctrl+a, then paste into "new rpm" here</li>
+        <li>repeat for the vertical axis, pasting into "new map"</li>
+        <li>click convert</li>
+        <li>look at the preview table and make sure it looks right</li>
+        <li><i>Seriously</i>. Look again. Assume this isn't right. I take zero
+            responsibility for your engine, transmission, dog, tires, driveway,
+            or anything else.</li>
+        <li>click in "new table" here</li>
+        <li>ctrl+a, ctrl+c</li>
+        <li>click in the table in your program, ctrl+a, ctrl+v</li>
+    </ol>
+    <form name="src" onSubmit="return(false)">
+        <button type="submit" disabled style="display: none" aria-hidden="true">
+            <!-- Disable submit on enter -->
+        </button>
+        rpm:<textarea name="rpm" placeholder="rpm" rows=1></textarea><br />
+        map:<textarea name="map" placeholder="map" rows=1></textarea><br />
+        tbl:<textarea name="tbl" placeholder="tbl" rows=1></textarea><br />
+        new rpm:<textarea name="newrpm" placeholder="newrpm" rows=1></textarea><br />
+        new map:<textarea name="newmap" placeholder="newmap" rows=1></textarea><br />
+        <button onClick="parse(this.form)">Convert</button><br />
+    </form>
+    <div id="row" style="display: none">
+        <span id="error" class="error"></span><br />
+        width:  <span id="width"></span><br />
+        height: <span id="height"></span><br />
+    </div>
+    <div id="new_data_container">
+        new table:<textarea id="new_table" placeholder="TBD" readonly rows=2 cols=2></textarea><br />
+        <span id="new_display"></span>
+    </div>
+</body>
+</html>
